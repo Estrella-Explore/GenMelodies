@@ -1,0 +1,79 @@
+# 自动检测文本文件，统一换行符
+* text=auto
+
+# --- Python 文件强制 LF ---
+*.py      text eol=lf
+*.pyi     text eol=lf
+*.pyx     text eol=lf
+*.pxd     text eol=lf
+
+# --- 脚本类文件强制 LF ---
+*.sh      text eol=lf
+*.bash    text eol=lf
+*.zsh     text eol=lf
+*.fish    text eol=lf
+
+# --- 配置文件 ---
+*.toml    text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.ini     text eol=lf
+*.cfg     text eol=lf
+Makefile  text eol=lf
+
+# --- 文档 ---
+*.md      text eol=lf
+*.rst     text eol=lf
+*.txt     text eol=lf
+
+# --- Web 前端 ---
+*.html    text eol=lf
+*.css     text eol=lf
+*.js      text eol=lf
+*.ts      text eol=lf
+*.jsx     text eol=lf
+*.tsx     text eol=lf
+*.json    text eol=lf
+*.jsonc   text eol=lf
+
+# --- Windows 特定（强制 CRLF） ---
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+
+# --- 二进制文件 ---
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.bmp     binary
+*.webp    binary
+*.svg     binary
+*.mp3     binary
+*.wav     binary
+*.ogg     binary
+*.flac    binary
+*.mid     binary
+*.midi    binary
+*.mp4     binary
+*.avi     binary
+*.mov     binary
+*.mkv     binary
+*.webm    binary
+*.pdf     binary
+*.zip     binary
+*.tar     binary
+*.gz      binary
+*.7z      binary
+*.rar     binary
+*.ttf     binary
+*.otf     binary
+*.woff    binary
+*.woff2   binary
+*.eot     binary
+*.pyc     binary
+*.pyd     binary
+*.so      binary
+*.dll     binary
+*.exe     binary

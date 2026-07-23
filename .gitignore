@@ -1,0 +1,174 @@
+# --- 字节码 & 缓存 ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+eggs/
+parts/
+sdist/
+var/
+wheels/
+*.whl
+
+# --- 虚拟环境 ---
+.venv/
+venv/
+env/
+ENV/
+.venv/*
+venv/*
+env/*
+ENV/*
+
+# --- IDE & 编辑器 (跨平台) ---
+# VS Code
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim / Neovim
+*.swp
+*.swo
+*~
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+Session.vim
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Atom
+.atom/
+
+# Eclipse / PyDev
+.project
+.pydevproject
+.settings/
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- 操作系统相关 ---
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Icon
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+*.exe
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# --- 环境变量 & 配置 ---
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+secrets.*
+
+# --- 日志文件 ---
+*.log
+logs/
+*.log.*
+
+# --- 测试 & 覆盖率 ---
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+tests/
+examples/*.txt
+
+# --- 类型检查 ---
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# --- 打包 ---
+*.manifest
+*.spec
+MANIFEST
+
+# --- 其他 ---
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.bak
+*.cache
+
+# 文档生成
+docs/_build/
+site/
+
+# 压缩文件
+*.7z
+*.bz2
+*.dmg
+*.gz
+*.iso
+*.rar
+*.tar
+*.xz
+*.zip
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath
+*.sage.py
+
+# Scrapy
+.scrapy
+
+# Rope
+.ropeproject
+
+# Fabric
+fabfile.py
