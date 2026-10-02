@@ -1,154 +1,171 @@
-"""
-GenMelodies — 原神乐器自动演奏乐谱生成工具
-
-将 MIDI 文件转换为原神乐器可用的数字谱或字母谱。
-"""
+"""GenMelodies：MIDI 乐谱转换、MP3/WAV 节奏分析和粗略单音乐谱。"""
 
 import argparse
+import json
+import math
 import sys
-import os
 from pathlib import Path
 
-from core import MidiParser, ChordDetector, Simplifier, NoteMapper, Quantizer, ScoreGenerator
+from core import MidiParser, ChordDetector, Simplifier, Quantizer, ScoreGenerator
 
 
-def parse_args():
-    p = argparse.ArgumentParser(
-        description='GenMelodies — 原神乐器自动演奏乐谱生成工具',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例:
-  python genmelodies.py song.mid                 # MIDI 转数字谱
-  python genmelodies.py song.mid -f letter       # MIDI 转字母谱
-  python genmelodies.py song.mid -t 2            # 选择第 2 轨
-  python genmelodies.py song.mid -o output.txt   # 指定输出文件
-        """,
-    )
-    p.add_argument('input', help='输入 MIDI 文件 (.mid/.midi)')
-    p.add_argument('-o', '--output', help='输出文件路径（默认与输入同名 .txt）')
-    p.add_argument('-f', '--format', choices=['number', 'letter'],
-                   default='number', help='输出格式 (默认: number)')
-    p.add_argument('-t', '--track', type=int, default=None,
-                   help='指定音轨索引 (0-based, 默认全部合并)')
-    p.add_argument('--no-simplify', action='store_true',
-                   help='禁用简化')
-    p.add_argument('--min-duration', type=float, default=0.03,
-                   help='最小音符时长 秒 (默认: 0.03)')
-    p.add_argument('--merge-threshold', type=float, default=0.005,
-                   help='同音合并阈值 秒 (默认: 0.005)')
-    p.add_argument('--grace-threshold', type=float, default=0.06,
-                   help='装饰音检测阈值 秒 (默认: 0.06)')
-    p.add_argument('--max-chord', type=int, default=5,
-                   help='和弦最大键数 (默认: 5)')
-    p.add_argument('--chord-window', type=float, default=0.02,
-                   help='和弦检测窗口 秒 (默认: 0.02)')
-    p.add_argument('--extract-melody', action='store_true', default=False,
-                   help='从多声部中提取旋律线（去掉伴奏音）')
-    p.add_argument('--synthesize', action='store_true', default=False,
-                   help='反向合成试听 MIDI 文件')
-    p.add_argument('--version', action='version', version='GenMelodies 0.0.1')
-    return p.parse_args()
-
-
-def main():
-    args = parse_args()
-
-    # 检查输入文件
-    if not os.path.exists(args.input):
-        print(f"错误: 文件不存在: {args.input}")
-        sys.exit(1)
-
-    ext = Path(args.input).suffix.lower()
-    if ext not in ('.mid', '.midi'):
-        print(f"错误: 不支持的文件格式: {ext}")
-        print("当前仅支持 .mid / .midi 格式")
-        sys.exit(1)
-
-    print(f"处理 MIDI 文件: {args.input}")
-
+def positive_float(value):
     try:
-        # ── 1. 解析 ──
-        print("  [1/5] 解析 MIDI...")
-        parser = MidiParser()
-        piece = parser.parse(args.input, track_index=args.track)
-        notes = piece.merged_notes
+        number = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("必须是有限的正数") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError("必须是有限的正数")
+    return number
+
+
+def nonnegative_float(value):
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("必须是有限的非负数") from exc
+    if not math.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("必须是有限的非负数")
+    return number
+
+
+def time_signature(value):
+    try:
+        numerator, denominator = map(int, value.split('/'))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("拍号格式必须是 N/D，例如 4/4 或 6/8") from exc
+    if not 1 <= numerator <= 32 or denominator not in (1, 2, 4, 8, 16, 32):
+        raise argparse.ArgumentTypeError("拍号分子应在 1–32，分母应为 1、2、4、8、16 或 32")
+    return numerator, denominator
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description='GenMelodies — MIDI 乐谱 / MP3、WAV 节奏分析')
+    parser.add_argument('input', help='输入文件 (.mid/.midi/.mp3/.wav)')
+    parser.add_argument('-o', '--output', help='乐谱输出文件；分析模式下用于保存 JSON')
+    parser.add_argument('-f', '--format', choices=['number', 'letter'], default='number')
+    parser.add_argument('-t', '--track', type=int, help='MIDI 音轨索引 (0-based)')
+    parser.add_argument('--analyze-rhythm', action='store_true', help='仅分析音频节奏，不提取音高或生成乐谱')
+    parser.add_argument('--json', action='store_true', help='分析模式：向标准输出写纯 JSON（诊断写 stderr）')
+    parser.add_argument('--rhythm-json', help='另存节奏诊断 JSON，包含候选、置信指标和拍点')
+    parser.add_argument('--bpm', type=positive_float, help='人工指定四分音符 BPM，包括 6/8')
+    parser.add_argument('--time-signature', type=time_signature, help='人工指定拍号，例如 3/4、6/8')
+    parser.add_argument('--beat-offset', type=nonnegative_float, help='人工指定第一小节下拍时间（秒）')
+    parser.add_argument('--no-simplify', action='store_true')
+    parser.add_argument('--min-duration', type=nonnegative_float, default=0.03)
+    parser.add_argument('--merge-threshold', type=nonnegative_float, default=0.005)
+    parser.add_argument('--grace-threshold', type=nonnegative_float, default=0.06)
+    parser.add_argument('--max-chord', type=int, default=5)
+    parser.add_argument('--chord-window', type=nonnegative_float, default=0.02)
+    parser.add_argument('--extract-melody', action='store_true', help='MIDI 多声部简化；音频不会分离伴奏')
+    parser.add_argument('--synthesize', action='store_true', help='生成乐谱后合成试听 MIDI')
+    parser.add_argument('--version', action='version', version='GenMelodies 0.1.0')
+    args = parser.parse_args(argv)
+    if args.json and not args.analyze_rhythm:
+        parser.error('--json 必须与 --analyze-rhythm 一起使用')
+    if args.track is not None and args.track < 0:
+        parser.error('--track 不得为负数')
+    if args.max_chord < 1:
+        parser.error('--max-chord 必须为正整数')
+    input_path = Path(args.input).resolve()
+    for output in (args.output, args.rhythm_json):
+        if output and Path(output).resolve() == input_path:
+            parser.error('输出路径不能覆盖输入文件')
+    return args
+
+
+def write_json(filepath, data):
+    Path(filepath).write_text(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + '\n',
+                              encoding='utf-8')
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    source = Path(args.input)
+    if not source.is_file():
+        print(f'错误: 文件不存在: {source}', file=sys.stderr)
+        return 1
+    ext = source.suffix.lower()
+    if ext not in ('.mid', '.midi', '.mp3', '.wav'):
+        print(f'错误: 不支持 {ext}；支持 .mid / .midi / .mp3 / .wav', file=sys.stderr)
+        return 1
+    is_audio = ext in ('.mp3', '.wav')
+    if not is_audio and (args.analyze_rhythm or args.rhythm_json):
+        print('错误: 节奏音频诊断适用于 MP3/WAV；MIDI 使用文件内速度和拍号事件', file=sys.stderr)
+        return 1
+    if is_audio and args.track is not None:
+        print('错误: 音频没有 MIDI 音轨索引，请移除 --track', file=sys.stderr)
+        return 1
+    try:
+        if is_audio:
+            from core.audio_parser import AudioParser
+            from core.audio_rhythm import analyze_samples
+            audio_parser = AudioParser()
+            samples, sample_rate = audio_parser.decode(str(source))
+            rhythm = analyze_samples(samples, sample_rate, bpm=args.bpm,
+                                     time_signature=args.time_signature, beat_offset=args.beat_offset)
+            diagnostics = rhythm.to_dict()
+            if args.rhythm_json:
+                write_json(args.rhythm_json, diagnostics)
+            for warning in rhythm.warnings:
+                print(f'警告: {warning}', file=sys.stderr)
+            if args.analyze_rhythm:
+                if args.output:
+                    write_json(args.output, diagnostics)
+                if args.json:
+                    print(json.dumps(diagnostics, ensure_ascii=False, indent=2, allow_nan=False))
+                else:
+                    bpm_text = f'{rhythm.bpm:.2f}' if rhythm.bpm is not None else '未知'
+                    meter_text = '/'.join(map(str, rhythm.time_signature)) if rhythm.time_signature else '未知'
+                    print(f'四分音符 BPM: {bpm_text}；拍号: {meter_text}；小节网格起点: {rhythm.grid_origin:.3f}s')
+                    print(f'速度置信指标: {rhythm.tempo_confidence:.3f}；拍号置信指标: {rhythm.meter_confidence:.3f}')
+                    if args.output:
+                        print(f'诊断 JSON 已保存: {args.output}')
+                return 0
+            print('警告: 音频乐谱仅为粗略单音提取；完整歌曲中的人声、和弦和伴奏会产生误识别。', file=sys.stderr)
+            piece = audio_parser.parse_samples(samples, sample_rate, rhythm)
+        else:
+            piece = MidiParser().parse(str(source), track_index=args.track)
+            if args.bpm is not None:
+                piece.global_tempo = args.bpm
+                for track in piece.tracks:
+                    track.tempo_changes = [(0.0, args.bpm)]
+            if args.time_signature is not None:
+                piece.global_time_signature = args.time_signature
+            if args.beat_offset is not None:
+                piece.grid_origin = args.beat_offset
+        if not piece.merged_notes:
+            raise ValueError('未找到有效音符；音频请先用 --analyze-rhythm 分析节奏，单音提取可能不适用于此录音')
         tempo = piece.global_tempo
-        time_sig = piece.global_time_signature
-        print(f"  提取 {len(notes)} 个音符, BPM={tempo:.0f}, {time_sig[0]}/{time_sig[1]}")
-
-        if not notes:
-            print("错误: 未找到有效音符")
-            sys.exit(1)
-
-        # ── 2. 和弦检测 ──
-        print("  [2/5] 检测和弦...")
-        chord_detector = ChordDetector(time_window=args.chord_window)
-        units = chord_detector.detect(notes)
-        chords_count = sum(1 for u in units if len(u.pitches) > 1)
-        print(f"  生成 {len(units)} 个音乐单元 ({chords_count} 个和弦)")
-
-        # ── 3. 简化 ──
+        numerator, denominator = piece.global_time_signature
+        units = ChordDetector(time_window=args.chord_window).detect(piece.merged_notes)
         if not args.no_simplify:
-            print("  [3/5] 简化...")
-            simplifier = Simplifier(
-                min_duration=args.min_duration,
-                merge_threshold=args.merge_threshold,
-                grace_threshold=args.grace_threshold,
-                max_chord_notes=args.max_chord,
-                extract_melody=args.extract_melody,
-            )
-            before = len(units)
-            units = simplifier.simplify(units)
-            print(f"  简化: {before} → {len(units)} 个单元")
-
-        # ── 4. 量化 ──
-        print("  [4/5] 量化节奏...")
-        tempo_changes = [(0.0, tempo)]  # 默认
-        if piece.tracks:
-            tempo_changes = piece.tracks[0].tempo_changes
-        quantizer = Quantizer(beats_per_measure=time_sig[0])
+            units = Simplifier(min_duration=args.min_duration, merge_threshold=args.merge_threshold,
+                               grace_threshold=args.grace_threshold, max_chord_notes=args.max_chord,
+                               extract_melody=args.extract_melody).simplify(units)
+        if not units:
+            raise ValueError('简化后没有音符；尝试 --no-simplify 或降低 --min-duration')
+        tempo_changes = (piece.tracks[0].tempo_changes if piece.tracks else []) or [(0.0, tempo)]
+        quantizer = Quantizer(beats_per_measure=numerator, beat_denominator=denominator,
+                              grid_origin=piece.grid_origin)
         measures = quantizer.quantize(units, tempo_changes)
-        print(f"  划分为 {len(measures)} 个小节")
-
-        # 小节时长（取第一个速度用于首行显示）
-        beat_duration = 60.0 / tempo
-        measure_duration = beat_duration * time_sig[0]
-
-        # ── 5. 生成乐谱 ──
-        print("  [5/5] 生成乐谱...")
-        generator = ScoreGenerator(format_type=args.format)
-        score = generator.generate(measures, measure_duration, time_sig[0])
-
-        # 输出
-        output_path = args.output or str(Path(args.input).with_suffix('.txt'))
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(score)
-
-        print(f"\n✓ 乐谱已生成: {output_path}")
-        print(f"  格式: {'数字谱' if args.format == 'number' else '字母谱'}")
-        print(f"  小节数: {len(measures)}")
-        print(f"  小节时长: {measure_duration:.3f}s")
-
-        # ── 6. 反向合成试听 ──
+        measure_duration = 60.0 / tempo * numerator * 4.0 / denominator
+        if len(tempo_changes) > 1 or (piece.tracks and len(piece.tracks[0].time_sig_changes) > 1):
+            print('警告: 当前文本谱只记录首个小节时长和拍号；变速、变拍号的播放只能近似。', file=sys.stderr)
+        score = ScoreGenerator(format_type=args.format).generate(measures, measure_duration, numerator)
+        output_path = Path(args.output) if args.output else source.with_suffix('.txt')
+        output_path.write_text(score, encoding='utf-8')
+        print(f'乐谱已生成: {output_path}；{len(measures)} 小节；BPM={tempo:.2f}；{numerator}/{denominator}')
         if args.synthesize:
             from core.synthesizer import ScoreSynthesizer
-            synth_path = str(Path(output_path).with_suffix('.synth.mid'))
-            print(f"\n  [合成] 生成试听 MIDI: {synth_path}")
-            try:
-                synth = ScoreSynthesizer()
-                synth.synthesize(score, synth_path)
-                print(f"  ✓ 试听文件已生成: {synth_path}")
-            except Exception as e:
-                print(f"  ⚠ 合成失败: {e}")
-                import traceback
-                traceback.print_exc()
-
-    except Exception as e:
-        print(f"\n错误: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+            synth_path = str(output_path.with_suffix('.synth.mid'))
+            ScoreSynthesizer().synthesize(score, synth_path, beats_per_measure=numerator * 4 / denominator)
+            print(f'试听 MIDI 已生成: {synth_path}')
+        return 0
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f'错误: {exc}', file=sys.stderr)
+        return 1
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

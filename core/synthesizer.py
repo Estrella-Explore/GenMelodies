@@ -106,7 +106,7 @@ class ScoreSynthesizer:
 
         每段: {'measure_duration': float, 'lines': [[slots, ...], ...]}
         """
-        lines = text.strip().split('\n')
+        lines = text.splitlines()
         sections: List[dict] = []
         current_measure_dur: Optional[float] = None
         current_lines: List[List[dict]] = []
@@ -135,7 +135,8 @@ class ScoreSynthesizer:
             # 普通乐谱行
             if current_measure_dur is None:
                 current_measure_dur = 0.5  # 默认
-            slots = self._parse_line(stripped)
+            # 固定时间槽中的前导/尾随空格是休止，不能 trim。
+            slots = self._parse_line(line)
             if slots:
                 current_lines.append(slots)
 
@@ -158,7 +159,7 @@ class ScoreSynthesizer:
         # 按 / 分割小节
         measures = line.split('/')
         # 移除末尾空段
-        if measures and measures[-1].strip() == '':
+        if measures and measures[-1] == '':
             measures = measures[:-1]
 
         result = []

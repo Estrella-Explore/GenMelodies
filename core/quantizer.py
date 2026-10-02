@@ -1,157 +1,73 @@
-"""
-节奏量化器
+"""按真实小节相位和四分音符 BPM 量化；空槽不压缩，保留演奏时间。"""
 
-将自由时间的 MusicUnit 对齐到小节/拍网格，支持变速。
-"""
-
+import bisect
+import math
 from typing import List, Tuple
+
 from .models import MusicUnit, MeasureSlot
 
 
 class Quantizer:
-    """节奏量化器，支持变速"""
-
-    def __init__(
-        self,
-        beats_per_measure: int = 4,
-        slots_per_beat: int = 4,  # 16 分音符精度
-    ):
+    def __init__(self, beats_per_measure: int = 4, slots_per_beat: int = 4,
+                 beat_denominator: int = 4, grid_origin: float = 0.0):
+        if beats_per_measure < 1 or slots_per_beat < 1 or beat_denominator < 1:
+            raise ValueError("拍数、分母和每拍槽数必须为正整数")
+        if not math.isfinite(grid_origin):
+            raise ValueError("小节网格起点必须是有限数")
         self.beats_per_measure = beats_per_measure
         self.slots_per_beat = slots_per_beat
+        self.beat_denominator = beat_denominator
+        self.grid_origin = grid_origin
 
-    def quantize(
-        self,
-        units: List[MusicUnit],
-        tempo_changes: List[Tuple[float, float]],  # [(time_sec, bpm), ...]
-    ) -> List[List[MeasureSlot]]:
-        """将 MusicUnit 列表量化为小节网格"""
+    def quantize(self, units: List[MusicUnit],
+                 tempo_changes: List[Tuple[float, float]]) -> List[List[MeasureSlot]]:
         if not units:
             return []
+        units = sorted(units, key=lambda unit: unit.start)
+        if any(not math.isfinite(u.start) or not math.isfinite(u.end) or u.end < u.start
+               for u in units):
+            raise ValueError("音符时间必须有限且结束不早于开始")
+        times, bpms, cumulative = self._tempo_map(tempo_changes)
 
-        if not tempo_changes:
-            tempo_changes = [(0.0, 120.0)]
+        def beat_at(seconds):
+            index = max(0, bisect.bisect_right(times, seconds) - 1)
+            return cumulative[index] + (seconds - times[index]) * bpms[index] / 60.0
 
-        # ── 构建变速感知的小节边界 ──
-        measure_starts = self._build_measure_boundaries(units, tempo_changes)
-
-        # ── 裁剪前导静音：从第一个有音符的小节开始 ──
-        first_note = units[0].start
-        trim_idx = 0
-        for i, m_start in enumerate(measure_starts):
-            if i + 1 < len(measure_starts) and measure_starts[i + 1] > first_note:
-                trim_idx = i
-                break
-        measure_starts = measure_starts[trim_idx:]
-
-        # ── 将音符分配到小节 ──
-        measures_units: List[List[MusicUnit]] = []
-        current: List[MusicUnit] = []
-        m_idx = 0
-
-        for u in units:
-            while m_idx + 1 < len(measure_starts) and u.start >= measure_starts[m_idx + 1]:
-                measures_units.append(current)
-                current = []
-                m_idx += 1
-
-            m_start = measure_starts[m_idx] if m_idx < len(measure_starts) else 0.0
-            rel_unit = MusicUnit(
-                pitches=list(u.pitches),
-                start=u.start - m_start,
-                end=u.end - m_start,
-                is_grace=u.is_grace,
-            )
-            current.append(rel_unit)
-
-        if current:
-            measures_units.append(current)
-
-        # ── 每个小节 → 槽位序列 ──
-        result: List[List[MeasureSlot]] = []
-        for i, m_units in enumerate(measures_units):
-            m_start = measure_starts[i] if i < len(measure_starts) else 0.0
-            m_end = measure_starts[i + 1] if i + 1 < len(measure_starts) else m_start + 2.0
-            m_dur = m_end - m_start
-            slots = self._build_slots(m_units, m_dur)
-            result.append(slots)
-
+        origin = beat_at(self.grid_origin)
+        bar_beats = self.beats_per_measure * 4.0 / self.beat_denominator
+        n_slots = self.beats_per_measure * self.slots_per_beat
+        first_bar = math.floor((beat_at(units[0].start) - origin) / bar_beats + 1e-9)
+        last_beat = max(beat_at(u.end) for u in units)
+        last_bar = max(first_bar, math.ceil((last_beat - origin) / bar_beats - 1e-9) - 1)
+        last_bar = max(last_bar, max(math.floor((beat_at(u.start) - origin) / bar_beats + 1e-9)
+                                     for u in units))
+        if last_bar - first_bar + 1 > 10000:
+            raise ValueError("量化超过 10000 小节，请检查 BPM 或输入时长")
+        result = [[MeasureSlot(pitches=[]) for _ in range(n_slots)]
+                  for _ in range(last_bar - first_bar + 1)]
+        for unit in units:
+            position = (beat_at(unit.start) - origin) / bar_beats
+            absolute_slot = math.floor(position * n_slots + 0.5)
+            bar, slot = divmod(absolute_slot, n_slots)
+            if bar > last_bar:
+                bar, slot = last_bar, n_slots - 1
+            if bar < first_bar:
+                bar, slot = first_bar, 0
+            target = result[bar - first_bar][slot]
+            target.pitches = sorted(set(target.pitches).union(unit.pitches))
+            target.is_grace = target.is_grace or unit.is_grace
         return result
 
-    def _build_measure_boundaries(
-        self,
-        units: List[MusicUnit],
-        tempo_changes: List[Tuple[float, float]],
-    ) -> List[float]:
-        """根据变速信息构建小节边界时间点列表"""
-        tempo_changes = sorted(tempo_changes, key=lambda x: x[0])
-
-        first_note = units[0].start
-        last_note = max(u.end for u in units)
-
-        boundaries = []
-        current_time = first_note
-        tc_idx = 0
-        current_bpm = tempo_changes[0][1]
-
-        while current_time < last_note + 10.0:
-            while tc_idx + 1 < len(tempo_changes) and tempo_changes[tc_idx + 1][0] <= current_time:
-                tc_idx += 1
-                current_bpm = tempo_changes[tc_idx][1]
-
-            boundaries.append(current_time)
-            measure_dur = (60.0 / current_bpm) * self.beats_per_measure
-            current_time += measure_dur
-
-            if len(boundaries) > 10000:
-                break
-
-        return boundaries
-
-    def _build_slots(
-        self, units: List[MusicUnit], measure_dur: float
-    ) -> List[MeasureSlot]:
-        """固定槽数小节网格"""
-        n_slots = self.beats_per_measure * self.slots_per_beat
-        slot_width = measure_dur / n_slots
-
-        if not units:
-            return [MeasureSlot(pitches=[], is_grace=False)]
-
-        occupied = [False] * n_slots
-        unit_to_slot: dict = {}
-        for u in units:
-            si = int(u.start / slot_width)
-            ei = int(u.end / slot_width)
-            si = max(0, min(n_slots - 1, si))
-            ei = max(si, min(n_slots - 1, ei))
-            unit_to_slot.setdefault(si, []).append(u)
-            for oi in range(si, ei + 1):
-                occupied[oi] = True
-
-        slots: List[MeasureSlot] = []
-        rest_run = 0
-        for si in range(n_slots):
-            if si in unit_to_slot:
-                if rest_run > 0:
-                    slots.append(MeasureSlot(pitches=[], is_grace=False))
-                    rest_run = 0
-                slot_units = unit_to_slot[si]
-                pitches: List[int] = []
-                is_grace = False
-                for su in slot_units:
-                    pitches.extend(su.pitches)
-                    if su.is_grace:
-                        is_grace = True
-                slots.append(MeasureSlot(
-                    pitches=sorted(set(pitches)),
-                    is_grace=is_grace,
-                ))
-            elif occupied[si]:
-                rest_run += 1
-            else:
-                rest_run += 1
-
-        if rest_run > 0:
-            slots.append(MeasureSlot(pitches=[], is_grace=False))
-
-        return slots
+    @staticmethod
+    def _tempo_map(tempo_changes):
+        changes = sorted(tempo_changes or [(0.0, 120.0)])
+        if any(not math.isfinite(t) or not math.isfinite(bpm) or bpm <= 0
+               for t, bpm in changes):
+            raise ValueError("速度必须是有限的正 BPM，速度事件时间必须有限")
+        collapsed = dict(changes)
+        times = sorted(collapsed)
+        bpms = [collapsed[t] for t in times]
+        cumulative = [0.0]
+        for i in range(1, len(times)):
+            cumulative.append(cumulative[-1] + (times[i] - times[i - 1]) * bpms[i - 1] / 60.0)
+        return times, bpms, cumulative

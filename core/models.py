@@ -37,6 +37,9 @@ class ParsedPiece:
     # 合并后的速度/拍号信息
     global_tempo: float = 120.0
     global_time_signature: Tuple[int, int] = (4, 4)
+    # 小节网格起点（秒）；MIDI 默认以文件零点为基准，音频由下拍估计决定。
+    grid_origin: float = 0.0
+    rhythm_analysis: Optional[dict] = None
 
 
 # ── 流水线中间类型 ──────────────────────────────────────
