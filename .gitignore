@@ -119,7 +119,7 @@ nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
-tests/
+# Tests are source files and must be versioned.
 examples/*.txt
 
 # --- 类型检查 ---
@@ -138,6 +138,7 @@ MANIFEST
 # 临时文件
 tmp/
 temp/
+.audio-native/
 *.tmp
 *.bak
 *.cache
