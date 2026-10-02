@@ -36,6 +36,29 @@ def rhythm_audio(bpm=120, meter=4, duration=18., offset=.31, subdivisions=2,
     return audio, sample_rate
 
 
+def sparse_drums(bpm, compound=False, seed=77, noise=.015):
+    """A quiet third waltz beat, or two distinct compound conducting pulses."""
+    rate = 11025
+    random = np.random.default_rng(seed)
+    quarter = 60 / bpm
+    bar = 3 * quarter
+    audio = np.zeros(int((8 * bar + .2) * rate))
+    for measure in range(8):
+        for position in range(6):
+            start = int((measure * bar + position * quarter / 2) * rate)
+            t = np.arange(int(.18 * rate)) / rate
+            hat = random.normal(size=len(t))
+            hat[1:] -= hat[:-1]
+            sound = .08 * hat * np.exp(-t * 80)
+            if position == 0:
+                sound += .8 * np.sin(2 * np.pi * 90 * t) * np.exp(-t * 18)
+            elif position == (3 if compound else 2):
+                sound += .45 * random.normal(size=len(t)) * np.exp(-t * 25)
+            audio[start:start + len(sound)] += sound
+    audio += random.normal(0, noise, size=len(audio))
+    return audio, rate
+
+
 class AudioRhythmTests(unittest.TestCase):
     def test_straight_meter_and_nonzero_grid(self):
         audio, rate = rhythm_audio(bpm=123, meter=4)
@@ -61,6 +84,26 @@ class AudioRhythmTests(unittest.TestCase):
         self.assertEqual(result.beat_unit, "dotted-quarter")
         self.assertAlmostEqual(np.median(np.diff(result.beat_times)), 90 / 156, delta=.02)
 
+    def test_fast_waltz_does_not_mistake_whole_bars_for_beats(self):
+        for bpm in (147., 187.5, 207.):
+            with self.subTest(bpm=bpm):
+                result = analyze_samples(*sparse_drums(bpm, noise=.01))
+                self.assertAlmostEqual(result.bpm, bpm, delta=2.)
+                self.assertEqual(result.time_signature, (3, 4))
+
+    def test_compound_tempo_range_with_quiet_triplet_cymbals(self):
+        for bpm in (61., 85., 129., 162.):
+            with self.subTest(bpm=bpm):
+                result = analyze_samples(*sparse_drums(bpm, compound=True))
+                self.assertAlmostEqual(result.bpm, bpm, delta=2.)
+                self.assertEqual(result.time_signature, (6, 8))
+                self.assertEqual(result.beat_unit, "dotted-quarter")
+
+    def test_attack_at_recording_start_is_not_removed(self):
+        audio, rate = rhythm_audio(bpm=123, meter=4, offset=0.)
+        result = analyze_samples(audio, rate)
+        self.assertAlmostEqual(result.grid_origin, 0., delta=.06)
+
     def test_jitter_missing_attacks(self):
         audio, rate = rhythm_audio(bpm=137, meter=4, duration=26, missing=.2, jitter=.006)
         result = analyze_samples(audio, rate)
@@ -78,6 +121,22 @@ class AudioRhythmTests(unittest.TestCase):
         self.assertAlmostEqual(result.bpm, 120, delta=1.)
         self.assertIsNone(result.time_signature)
         self.assertTrue(all(item["score"] < .18 for item in result.meter_candidates))
+
+    def test_unmetered_triplets_expose_compound_bpm_interpretation(self):
+        rate = 11025
+        audio = np.zeros(rate * 18)
+        random = np.random.default_rng(95)
+        t = np.arange(1200) / rate
+        sound = (np.sin(2 * np.pi * 110 * t) + .2 * random.normal(size=len(t))) * np.exp(-t * 40)
+        for index, when in enumerate(np.arange(.3, 17.8, .2)):
+            start = int(when * rate)
+            audio[start:start + len(sound)] += sound * (1 if index % 3 == 0 else .24)
+        result = analyze_samples(audio, rate)
+        self.assertIsNone(result.time_signature)
+        self.assertTrue(any("1.5 times" in warning for warning in result.warnings))
+        self.assertTrue(result.tempo_candidates)
+        for candidate in result.tempo_candidates:
+            self.assertAlmostEqual(candidate["quarter_bpm_if_compound"], candidate["pulse_bpm"] * 1.5)
 
     def test_nonrhythmic_inputs_abstain(self):
         rate = 11025
