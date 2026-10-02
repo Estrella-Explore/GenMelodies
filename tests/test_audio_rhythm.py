@@ -1,5 +1,6 @@
 """Known-timing signals exercise DSP without depending on music downloads."""
 import unittest
+import json
 
 import numpy as np
 
@@ -43,6 +44,8 @@ class AudioRhythmTests(unittest.TestCase):
         self.assertEqual(result.time_signature, (4, 4))
         self.assertAlmostEqual(result.grid_origin, .31, delta=.06)
         self.assertGreater(result.tempo_confidence, .4)
+        self.assertEqual(result.meter_candidates[0]["time_signature"], (4, 4))
+        json.dumps(result.to_dict())
 
     def test_waltz_with_stereo_phase_cancellation(self):
         audio, rate = rhythm_audio(bpm=93, meter=3, stereo=True)
@@ -74,6 +77,7 @@ class AudioRhythmTests(unittest.TestCase):
         result = analyze_samples(audio, rate)
         self.assertAlmostEqual(result.bpm, 120, delta=1.)
         self.assertIsNone(result.time_signature)
+        self.assertTrue(all(item["score"] < .18 for item in result.meter_candidates))
 
     def test_nonrhythmic_inputs_abstain(self):
         rate = 11025

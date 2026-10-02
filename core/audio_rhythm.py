@@ -14,12 +14,14 @@ import numpy as np
 
 @dataclass
 class AudioRhythmResult:
+    """Confidence fields are heuristic evidence scores, not probabilities."""
     bpm: Optional[float] = None
     time_signature: Optional[tuple[int, int]] = None
     beat_times: list[float] = field(default_factory=list)
     downbeat_times: list[float] = field(default_factory=list)
     grid_origin: float = 0.0
     tempo_candidates: list[dict] = field(default_factory=list)
+    meter_candidates: list[dict] = field(default_factory=list)
     tempo_confidence: float = 0.0
     meter_confidence: float = 0.0
     warnings: list[str] = field(default_factory=list)
@@ -285,10 +287,92 @@ def _track_beats(period: float, first: float, duration: float,
     return np.asarray(beats)
 
 
+def _resolve_octave(candidates: list[dict], feature: np.ndarray, step: float) -> list[dict]:
+    """Alternating bass and treble attacks provide evidence for a faster pulse.
+
+    Loud backbeats otherwise make a snare-only half-tempo grid score better
+    than the actual kick/snare pulse, particularly under background noise.
+    """
+    winner = candidates[0]
+    faster = next((item for item in candidates[1:]
+                   if abs(item["bpm"] / winner["bpm"] - 2) < .035), None)
+    if (faster is None or winner["score"] - faster["score"] > .25 or
+            faster["coverage"] < .7 or faster["periodicity"] < .35):
+        return candidates
+    period = 60 / winner["bpm"]
+    phases = []
+    for column in (0, 2):
+        band = np.repeat(feature[:, column:column + 1], 3, axis=1)
+        times, weights, envelope = _peaks(band, step)
+        if len(times) < 6:
+            return candidates
+        correlation, _ = _autocorrelation(envelope, step)
+        if float(np.interp(period, np.arange(len(correlation)) * step, correlation)) < .3:
+            return candidates
+        phases.append(_phase(period, times, weights ** 3))
+    separation = abs((phases[0] - phases[1] + period / 2) % period - period / 2) / period
+    if separation > .37:
+        faster["score"] = winner["score"] + .025
+        faster["octave_evidence"] = "Alternating bass and treble attacks support this pulse."
+        return sorted(candidates, key=lambda item: item["score"], reverse=True)
+    return candidates
+
+
+def _local_tempos(feature: np.ndarray, step: float, reference: float) -> list[dict]:
+    """Recover a changing pulse from short overlapping, independently scored windows."""
+    width = int(round(6 / step))
+    stride = width // 2
+    windows = []
+    examined = 0
+    for start in range(0, len(feature) - width + 1, stride):
+        examined += 1
+        section = feature[start:start + width]
+        times, strengths, envelope = _peaks(section, step)
+        if len(times) < 7:
+            continue
+        correlation, _ = _autocorrelation(envelope, step)
+        ranked = _resolve_octave(_tempo(times, strengths, width * step, correlation, step), section, step)
+        nearby = [item for item in ranked if abs(np.log2(item["bpm"] / reference)) < .3
+                  and item["score"] >= ranked[0]["score"] - .17]
+        if not nearby:
+            continue
+        best = nearby[0]
+        if best["periodicity"] < .23 or best["coverage"] < .58:
+            continue
+        windows.append({"time": (start + width / 2) * step, "bpm": float(best["bpm"]),
+                        "phase": start * step + best["phase"],
+                        "confidence": .65 * best["periodicity"] + .2 * best["coverage"]})
+    return windows if len(windows) >= 3 and len(windows) >= .6 * examined else []
+
+
+def _track_variable(windows: list[dict], duration: float, onset_times: np.ndarray,
+                    strengths: np.ndarray) -> np.ndarray:
+    centers = np.array([item["time"] for item in windows])
+    periods = 60 / np.array([item["bpm"] for item in windows])
+    current = windows[0]["phase"]
+    # Walk backwards to the first audible region using the earliest local pulse.
+    while current - periods[0] >= onset_times[0] - .06:
+        current -= periods[0]
+    beats = []
+    while current < duration:
+        period = float(np.interp(current, centers, periods))
+        left = np.searchsorted(onset_times, current - .18 * period)
+        right = np.searchsorted(onset_times, current + .18 * period)
+        near = np.arange(left, right)
+        if len(near):
+            scores = strengths[near] * np.exp(-.5 * ((onset_times[near] - current) / (.07 * period)) ** 2)
+            attack = onset_times[near[int(np.argmax(scores))]]
+            current = .4 * current + .6 * float(attack)
+        if current >= 0:
+            beats.append(current)
+        current += period
+    return np.asarray(beats)
+
+
 def _meter(beats: np.ndarray, onset_times: np.ndarray, strengths: np.ndarray,
-           low_times: np.ndarray, low_strengths: np.ndarray) -> tuple[Optional[tuple[int, int]], float, int, float]:
+           low_times: np.ndarray, low_strengths: np.ndarray) -> tuple[Optional[tuple[int, int]], float, int, float, list[dict]]:
     if len(beats) < 9:
-        return None, 0., 0, 0.
+        return None, 0., 0, 0., []
     period = float(np.median(np.diff(beats)))
     tolerance = min(.045, period * .08)
     broad = _sample_strength(beats, onset_times, strengths, tolerance)
@@ -324,15 +408,24 @@ def _meter(beats: np.ndarray, onset_times: np.ndarray, strengths: np.ndarray,
                 score += min(.15, max(0., triple_evidence) * .22) * positive
             candidates.append((score, signature, offset, positive, strength))
     if not candidates:
-        return None, 0., 0, triple_evidence
+        return None, 0., 0, triple_evidence, []
     candidates.sort(reverse=True)
+    diagnostics = []
+    for score, signature, offset, positive, strength in candidates:
+        if any(item["time_signature"] == signature for item in diagnostics):
+            continue
+        diagnostics.append({"time_signature": signature, "score": float(score),
+                            "confidence": float(np.clip(score * .65, 0, 1)),
+                            "downbeat_index": int(offset), "downbeat_time": float(beats[offset]),
+                            "accent_contrast": float(strength), "consistent_bars": float(positive),
+                            "triplet_subdivision_evidence": float(triple_evidence)})
     best = candidates[0]
     alternative = next((item[0] for item in candidates if item[1] != best[1]), 0.)
     confidence = float(np.clip(best[0] * .65 + max(0, best[0] - alternative) * .5, 0, 1))
     # Similar 3/4 and 6/8 evidence, or equal accents, are genuinely ambiguous.
     if best[0] < .18 or best[3] < .7 or best[0] - alternative < .075:
-        return None, min(confidence, .39), 0, triple_evidence
-    return best[1], confidence, best[2], triple_evidence
+        return None, min(confidence, .39), 0, triple_evidence, diagnostics
+    return best[1], confidence, best[2], triple_evidence, diagnostics
 
 
 def analyze_samples(samples: np.ndarray, sample_rate: int, bpm: Optional[float] = None,
@@ -344,6 +437,8 @@ def analyze_samples(samples: np.ndarray, sample_rate: int, bpm: Optional[float] 
     in seconds, and may precede the first audible attack (a pickup or rest).
     Tempo candidates are conducting-pulse BPM until compound meter is resolved;
     their ``pulse_bpm`` field remains explicit after conversion to quarter BPM.
+    Automatic search covers 40--240 conducting pulses/minute; explicit BPM may
+    cover 20--400 quarter notes/minute. Confidence is evidence, not probability.
     """
     if isinstance(sample_rate, bool) or not np.isfinite(sample_rate) or sample_rate < 1000:
         raise ValueError("sample_rate must be at least 1000 Hz")
@@ -370,12 +465,25 @@ def analyze_samples(samples: np.ndarray, sample_rate: int, bpm: Optional[float] 
         result.warnings.append("Too few separate attacks to estimate rhythm reliably.")
         return _overrides(result, bpm, time_signature, beat_offset, compound)
     correlation, _ = _autocorrelation(envelope, step)
-    candidates = _tempo(onset_times, strengths, duration, correlation, step)
+    candidates = _resolve_octave(_tempo(onset_times, strengths, duration, correlation, step), feature, step)
     result.tempo_candidates = candidates[:6]
     winner = candidates[0]
     other = next((item for item in candidates[1:] if abs(np.log2(item["bpm"] / winner["bpm"])) > .12), None)
     separation = max(0., winner["score"] - (other["score"] if other else 0.))
     confidence = float(np.clip(winner["periodicity"] * .65 + winner["coverage"] * .2 + separation * .8, 0, 1))
+    windows = []
+    if bpm is None and duration >= 15 and (winner["periodicity"] < .32 or winner.get("explained_attacks", 0) < .4):
+        windows = _local_tempos(feature, step, winner["bpm"])
+        if windows:
+            local_bpms = np.array([item["bpm"] for item in windows])
+            variation = (np.percentile(local_bpms, 90) - np.percentile(local_bpms, 10)) / np.median(local_bpms)
+            if variation > .055:
+                winner = dict(winner, bpm=float(np.median(local_bpms)), coverage=.8,
+                              periodicity=float(np.mean([item["confidence"] for item in windows])))
+                confidence = float(np.clip(winner["periodicity"], 0, 1))
+                result.warnings.append("Tempo changes across the recording; reported BPM is a median and beat times follow local estimates.")
+            else:
+                windows = []
     result.tempo_confidence = confidence
     if winner["periodicity"] < .14 or winner["coverage"] < .46 or confidence < .3:
         result.warnings.append("No stable periodic pulse was found; automatic BPM is unknown.")
@@ -383,11 +491,13 @@ def analyze_samples(samples: np.ndarray, sample_rate: int, bpm: Optional[float] 
     period = (90 if compound else 60) / bpm if bpm is not None else 60 / winner["bpm"]
     phase = _phase(period, onset_times, strengths)
     phase += max(0, np.ceil((onset_times[0] - phase - .06) / period)) * period
-    beats = _track_beats(period, phase, duration, onset_times, strengths)
+    beats = (_track_variable(windows, duration, onset_times, strengths) if windows else
+             _track_beats(period, phase, duration, onset_times, strengths))
     low_feature = np.zeros_like(feature)
     low_feature[:, :] = feature[:, :1]
     low_times, low_strengths, _ = _peaks(low_feature, step)
-    inferred_meter, meter_confidence, downbeat_index, triple_evidence = _meter(beats, onset_times, strengths, low_times, low_strengths)
+    inferred_meter, meter_confidence, downbeat_index, triple_evidence, meter_candidates = _meter(beats, onset_times, strengths, low_times, low_strengths)
+    result.meter_candidates = meter_candidates
     signature = time_signature or inferred_meter
     compound = bool(signature and signature[1] == 8 and signature[0] >= 6 and signature[0] % 3 == 0)
     # An explicit meter resolves pulse notation. Quarter BPM is never silently

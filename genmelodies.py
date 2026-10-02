@@ -70,8 +70,8 @@ def parse_args(argv=None):
     if args.analyze_rhythm and args.synthesize:
         parser.error('--synthesize 需要生成乐谱，不能与 --analyze-rhythm 一起使用')
     input_path = Path(args.input).resolve()
-    output_path = Path(args.output).resolve() if args.output else (
-        None if args.analyze_rhythm else input_path.with_suffix('.txt'))
+    output_path = Path(args.output) if args.output else (
+        None if args.analyze_rhythm else Path(args.input).with_suffix('.txt'))
     outputs = [('输出文件', output_path)]
     if args.rhythm_json:
         outputs.append(('节奏诊断 JSON', Path(args.rhythm_json).resolve()))
@@ -81,6 +81,7 @@ def parse_args(argv=None):
     for label, path in outputs:
         if path is None:
             continue
+        path = path.resolve()
         if path == input_path:
             parser.error(f'{label}路径不能覆盖输入文件')
         if path in seen_outputs:
