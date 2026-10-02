@@ -120,12 +120,39 @@ class AudioIntegrationTests(unittest.TestCase):
 
     def test_cli_invalid_overrides_fail_before_file_access(self):
         for flag, value in [('--bpm', 'nan'), ('--bpm', '0'), ('--bpm', 'inf'),
+                            ('--bpm', '19.99'), ('--bpm', '400.01'), ('--bpm', '1e308'),
                             ('--time-signature', '3/3'), ('--time-signature', '0/4'),
                             ('--time-signature', '4/4/4'), ('--beat-offset', '-1')]:
             with self.subTest(flag=flag, value=value), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as raised:
                     genmelodies.parse_args(['missing.mp3', flag, value])
                 self.assertEqual(raised.exception.code, 2)
+
+    def test_cli_bpm_limits_inclusive_for_audio_and_midi(self):
+        for extension in ('mp3', 'mid'):
+            for bpm in ('20', '400'):
+                with self.subTest(extension=extension, bpm=bpm):
+                    args = genmelodies.parse_args([f'missing.{extension}', '--bpm', bpm])
+                    self.assertEqual(args.bpm, float(bpm))
+
+    def test_cli_output_collisions_refused_without_touching_inputs(self):
+        source = self.directory / 'original.mp3'
+        source.write_bytes(b'original-data')
+        default_score = source.with_suffix('.txt')
+        cases = [
+            [str(source), '--rhythm-json', str(default_score)],
+            [str(source), '-o', str(self.directory / 'same.json'), '--rhythm-json', str(self.directory / 'same.json')],
+            [str(source), '-o', str(source)],
+            [str(self.directory / 'original.synth.mid'), '-o', str(default_score), '--synthesize'],
+            [str(source), '-o', str(default_score), '--synthesize', '--rhythm-json', str(default_score.with_suffix('.synth.mid'))],
+        ]
+        for arguments in cases:
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    genmelodies.parse_args(arguments)
+                self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(source.read_bytes(), b'original-data')
+        self.assertFalse(default_score.exists())
 
     def test_midi_default_command_and_compound_meter(self):
         path = self.directory / 'meter.mid'
@@ -198,6 +225,10 @@ class QuantizerTimingTests(unittest.TestCase):
     def test_nonpositive_tempo_is_rejected(self):
         with self.assertRaises(ValueError):
             Quantizer().quantize([MusicUnit([60], 0, 1)], [(0, 0)])
+
+    def test_extreme_public_api_tempo_has_clear_validation_error(self):
+        with self.assertRaisesRegex(ValueError, '有限拍点'):
+            Quantizer().quantize([MusicUnit([60], 3, 4)], [(0, 1e308)])
 
 
 if __name__ == '__main__':

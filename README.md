@@ -56,7 +56,7 @@ python genmelodies.py solo.wav --bpm 120 --time-signature 4/4 --rhythm-json solo
 | `--analyze-rhythm` | 仅分析 MP3/WAV 节奏 | 关闭 |
 | `--json` | 分析模式向 stdout 写纯 JSON | 关闭 |
 | `--rhythm-json` | 保存音频节奏诊断 JSON | 无 |
-| `--bpm` | 指定四分音符 BPM（有限正数） | 自动 / MIDI 元数据 |
+| `--bpm` | 指定四分音符 BPM（20–400，有限数） | 自动 / MIDI 元数据 |
 | `--time-signature` | 指定拍号，例如 3/4、6/8 | 自动 / MIDI 元数据 |
 | `--beat-offset` | 第一小节下拍时间（秒） | 音频估计 / MIDI 零点 |
 | `-h, --help` | 帮助信息 | - |

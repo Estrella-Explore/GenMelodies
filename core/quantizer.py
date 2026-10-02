@@ -31,7 +31,10 @@ class Quantizer:
 
         def beat_at(seconds):
             index = max(0, bisect.bisect_right(times, seconds) - 1)
-            return cumulative[index] + (seconds - times[index]) * bpms[index] / 60.0
+            position = cumulative[index] + (seconds - times[index]) * bpms[index] / 60.0
+            if not math.isfinite(position):
+                raise ValueError("音符时间或 BPM 过大，无法构建有限拍点")
+            return position
 
         origin = beat_at(self.grid_origin)
         bar_beats = self.beats_per_measure * 4.0 / self.beat_denominator

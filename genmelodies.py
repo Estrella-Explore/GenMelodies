@@ -9,13 +9,13 @@ from pathlib import Path
 from core import MidiParser, ChordDetector, Simplifier, Quantizer, ScoreGenerator
 
 
-def positive_float(value):
+def bpm_float(value):
     try:
         number = float(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("必须是有限的正数") from exc
-    if not math.isfinite(number) or number <= 0:
-        raise argparse.ArgumentTypeError("必须是有限的正数")
+        raise argparse.ArgumentTypeError("BPM 必须是 20–400 之间的有限数") from exc
+    if not math.isfinite(number) or not 20 <= number <= 400:
+        raise argparse.ArgumentTypeError("BPM 必须是 20–400 之间的有限数")
     return number
 
 
@@ -48,7 +48,7 @@ def parse_args(argv=None):
     parser.add_argument('--analyze-rhythm', action='store_true', help='仅分析音频节奏，不提取音高或生成乐谱')
     parser.add_argument('--json', action='store_true', help='分析模式：向标准输出写纯 JSON（诊断写 stderr）')
     parser.add_argument('--rhythm-json', help='另存节奏诊断 JSON，包含候选、置信指标和拍点')
-    parser.add_argument('--bpm', type=positive_float, help='人工指定四分音符 BPM，包括 6/8')
+    parser.add_argument('--bpm', type=bpm_float, help='人工指定四分音符 BPM（20–400），包括 6/8')
     parser.add_argument('--time-signature', type=time_signature, help='人工指定拍号，例如 3/4、6/8')
     parser.add_argument('--beat-offset', type=nonnegative_float, help='人工指定第一小节下拍时间（秒）')
     parser.add_argument('--no-simplify', action='store_true')
@@ -67,10 +67,25 @@ def parse_args(argv=None):
         parser.error('--track 不得为负数')
     if args.max_chord < 1:
         parser.error('--max-chord 必须为正整数')
+    if args.analyze_rhythm and args.synthesize:
+        parser.error('--synthesize 需要生成乐谱，不能与 --analyze-rhythm 一起使用')
     input_path = Path(args.input).resolve()
-    for output in (args.output, args.rhythm_json):
-        if output and Path(output).resolve() == input_path:
-            parser.error('输出路径不能覆盖输入文件')
+    output_path = Path(args.output).resolve() if args.output else (
+        None if args.analyze_rhythm else input_path.with_suffix('.txt'))
+    outputs = [('输出文件', output_path)]
+    if args.rhythm_json:
+        outputs.append(('节奏诊断 JSON', Path(args.rhythm_json).resolve()))
+    if args.synthesize:
+        outputs.append(('试听 MIDI', output_path.with_suffix('.synth.mid')))
+    seen_outputs = {}
+    for label, path in outputs:
+        if path is None:
+            continue
+        if path == input_path:
+            parser.error(f'{label}路径不能覆盖输入文件')
+        if path in seen_outputs:
+            parser.error(f'{label}与{seen_outputs[path]}不能使用相同路径')
+        seen_outputs[path] = label
     return args
 
 
